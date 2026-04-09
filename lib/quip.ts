@@ -2,6 +2,7 @@ import { redactedErrorMessage } from './security';
 import { ExportResultItem, FailureItem } from './types';
 
 const RETRIABLE = new Set([429, 500, 502, 503, 504]);
+type JsonRecord = Record<string, unknown>;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -79,14 +80,40 @@ export interface FolderReadResult {
   foldersScanned: number;
 }
 
-function parseChildren(payload: any): any[] {
-  if (Array.isArray(payload?.children)) return payload.children;
-  if (Array.isArray(payload?.folder?.children)) return payload.folder.children;
-  if (Array.isArray(payload?.response?.children)) return payload.response.children;
+function asRecord(value: unknown): JsonRecord | undefined {
+  return typeof value === 'object' && value !== null ? (value as JsonRecord) : undefined;
+}
+
+function asRecordArray(value: unknown): JsonRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => asRecord(item))
+    .filter((item): item is JsonRecord => Boolean(item));
+}
+
+function getField(record: JsonRecord | undefined, key: string): unknown {
+  return record?.[key];
+}
+
+function parseChildren(payload: unknown): JsonRecord[] {
+  const root = asRecord(payload);
+  if (!root) return [];
+
+  const direct = asRecordArray(getField(root, 'children'));
+  if (direct.length) return direct;
+
+  const folder = asRecord(getField(root, 'folder'));
+  const folderChildren = asRecordArray(getField(folder, 'children'));
+  if (folderChildren.length) return folderChildren;
+
+  const response = asRecord(getField(root, 'response'));
+  const responseChildren = asRecordArray(getField(response, 'children'));
+  if (responseChildren.length) return responseChildren;
+
   return [];
 }
 
-function readString(...values: any[]): string | undefined {
+function readString(...values: unknown[]): string | undefined {
   for (const value of values) {
     if (typeof value === 'string' && value.trim()) {
       return value.trim();
@@ -95,18 +122,18 @@ function readString(...values: any[]): string | undefined {
   return undefined;
 }
 
-function isFolder(item: any): boolean {
-  const type = String(item?.type ?? item?.item_type ?? item?.kind ?? '').toLowerCase();
-  return type === 'folder' || Boolean(item?.folder_id && !item?.thread_id);
+function isFolder(item: JsonRecord): boolean {
+  const type = String(getField(item, 'type') ?? getField(item, 'item_type') ?? getField(item, 'kind') ?? '').toLowerCase();
+  return type === 'folder' || Boolean(getField(item, 'folder_id') && !getField(item, 'thread_id'));
 }
 
-function isThreadLike(item: any): boolean {
-  const type = String(item?.type ?? item?.item_type ?? item?.kind ?? '').toLowerCase();
+function isThreadLike(item: JsonRecord): boolean {
+  const type = String(getField(item, 'type') ?? getField(item, 'item_type') ?? getField(item, 'kind') ?? '').toLowerCase();
   return (
     type === 'document' ||
     type === 'spreadsheet' ||
     type === 'thread' ||
-    Boolean(item?.thread_id)
+    Boolean(getField(item, 'thread_id'))
   );
 }
 
@@ -125,7 +152,7 @@ export async function readFolderTree(
     if (!folderId || visited.has(folderId)) continue;
     visited.add(folderId);
 
-    const payload = await requestJsonWithRetry<any>(`${baseUrl}/1/folders/${encodeURIComponent(folderId)}`, {
+    const payload = await requestJsonWithRetry<unknown>(`${baseUrl}/1/folders/${encodeURIComponent(folderId)}`, {
       method: 'GET',
       headers: authHeaders(token, false)
     });
@@ -134,7 +161,7 @@ export async function readFolderTree(
 
     for (const child of children) {
       if (isFolder(child) && recurseSubfolders) {
-        const subFolderId = readString(child.folder_id, child.id);
+        const subFolderId = readString(getField(child, 'folder_id'), getField(child, 'id'));
         if (subFolderId && !visited.has(subFolderId)) {
           foldersToScan.push(subFolderId);
         }
@@ -142,7 +169,7 @@ export async function readFolderTree(
       }
 
       if (isThreadLike(child)) {
-        const threadId = readString(child.thread_id, child.id);
+        const threadId = readString(getField(child, 'thread_id'), getField(child, 'id'));
         if (threadId) {
           threads.add(threadId);
         }
@@ -168,13 +195,15 @@ export async function submitBulkExport(
     locale: 'en-US'
   };
 
-  const payload = await requestJsonWithRetry<any>(`${baseUrl}/1/threads/export/async`, {
+  const payload = await requestJsonWithRetry<unknown>(`${baseUrl}/1/threads/export/async`, {
     method: 'POST',
     headers: authHeaders(token),
     body: JSON.stringify(body)
   });
 
-  const requestId = readString(payload?.request_id, payload?.data?.request_id);
+  const root = asRecord(payload);
+  const data = asRecord(getField(root, 'data'));
+  const requestId = readString(getField(root, 'request_id'), getField(data, 'request_id'));
   if (!requestId) {
     throw new Error('Quip export request did not return request_id.');
   }
@@ -182,11 +211,23 @@ export async function submitBulkExport(
   return requestId;
 }
 
-function parseExportItems(payload: any): any[] {
-  if (Array.isArray(payload?.results)) return payload.results;
-  if (Array.isArray(payload?.items)) return payload.items;
-  if (Array.isArray(payload?.exports)) return payload.exports;
-  if (Array.isArray(payload?.data?.results)) return payload.data.results;
+function parseExportItems(payload: unknown): JsonRecord[] {
+  const root = asRecord(payload);
+  if (!root) return [];
+
+  const results = asRecordArray(getField(root, 'results'));
+  if (results.length) return results;
+
+  const items = asRecordArray(getField(root, 'items'));
+  if (items.length) return items;
+
+  const exportsField = asRecordArray(getField(root, 'exports'));
+  if (exportsField.length) return exportsField;
+
+  const data = asRecord(getField(root, 'data'));
+  const dataResults = asRecordArray(getField(data, 'results'));
+  if (dataResults.length) return dataResults;
+
   return [];
 }
 
@@ -198,7 +239,7 @@ export async function pollExportResult(
   const maxPolls = 120;
 
   for (let poll = 0; poll < maxPolls; poll += 1) {
-    const payload = await requestJsonWithRetry<any>(
+    const payload = await requestJsonWithRetry<unknown>(
       `${baseUrl}/1/threads/export/async?request_id=${encodeURIComponent(requestId)}`,
       {
         method: 'GET',
@@ -208,7 +249,9 @@ export async function pollExportResult(
       3
     );
 
-    const completed = Boolean(payload?.completed ?? payload?.data?.completed);
+    const root = asRecord(payload);
+    const data = asRecord(getField(root, 'data'));
+    const completed = Boolean(getField(root, 'completed') ?? getField(data, 'completed'));
     if (!completed) {
       await sleep(Math.min(1500 + poll * 100, 5000));
       continue;
@@ -219,21 +262,22 @@ export async function pollExportResult(
     const failures: FailureItem[] = [];
 
     for (const item of rawItems) {
-      const threadId = readString(item?.thread_id, item?.threadId, item?.id) ?? 'unknown-thread';
-      const fileUrl = readString(item?.file_url, item?.url);
-      const status = readString(item?.status, item?.state);
+      const threadId =
+        readString(getField(item, 'thread_id'), getField(item, 'threadId'), getField(item, 'id')) ?? 'unknown-thread';
+      const fileUrl = readString(getField(item, 'file_url'), getField(item, 'url'));
+      const status = readString(getField(item, 'status'), getField(item, 'state'));
 
       if (fileUrl) {
         successes.push({
           threadId,
           fileUrl,
-          suggestedName: readString(item?.file_name, item?.title, item?.name)
+          suggestedName: readString(getField(item, 'file_name'), getField(item, 'title'), getField(item, 'name'))
         });
       } else {
         failures.push({
           threadId,
           status,
-          error: readString(item?.error, item?.message, item?.reason) ?? 'Export failed'
+          error: readString(getField(item, 'error'), getField(item, 'message'), getField(item, 'reason')) ?? 'Export failed'
         });
       }
     }
