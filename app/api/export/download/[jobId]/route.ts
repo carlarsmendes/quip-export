@@ -14,8 +14,9 @@ export async function GET(_req: NextRequest, { params }: { params: { jobId: stri
   }
 
   const filename = job.zipFilename ?? `quip_export_${params.jobId}.zip`;
+  const zipBytes = new Uint8Array(job.zipBuffer);
 
-  return new NextResponse(job.zipBuffer, {
+  return new NextResponse(zipBytes, {
     status: 200,
     headers: {
       'Content-Type': 'application/zip',
