@@ -131,7 +131,7 @@ export default function HomePage() {
   const [error, setError] = useState('');
   const [isStarting, setIsStarting] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
-  const [clockTick, setClockTick] = useState(0);
+  const [, setClockTick] = useState(0);
 
   const isBusy = isStarting || statusPayload?.status === 'queued' || statusPayload?.status === 'running';
 
@@ -146,10 +146,7 @@ export default function HomePage() {
     ];
   }, [statusPayload]);
 
-  const elapsedSeconds = useMemo(() => {
-    if (!startedAt) return 0;
-    return Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-  }, [startedAt, clockTick]);
+  const elapsedSeconds = startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
 
   const currentStage = statusPayload?.stage ?? 'starting';
   const stageDescription = describeStage(currentStage);
@@ -393,7 +390,7 @@ export default function HomePage() {
         {error && <div className="error">{error}</div>}
         {error && (
           <div className="help" style={{ marginTop: '8px' }}>
-            Tip: Browser extension console warnings like \"A listener indicated an asynchronous response...\" are usually not from this
+            Tip: Browser extension console warnings like &quot;A listener indicated an asynchronous response...&quot; are usually not from this
             app and can be ignored.
           </div>
         )}
