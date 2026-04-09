@@ -368,7 +368,9 @@ export default function HomePage() {
 
             {statusPayload.status === 'completed' && (
               <>
-                <div className="success">Done. Your export ZIP is ready.</div>
+                <div className="success">
+                  Done. {statusPayload.summary.successfulExports} files exported. Your ZIP is ready.
+                </div>
                 {jobId && (
                   <div className="links">
                     <a className="cta-button" href={`/api/export/download/${jobId}`}>
