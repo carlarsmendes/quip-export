@@ -1,0 +1,287 @@
+import { redactedErrorMessage } from './security';
+import { ExportResultItem, FailureItem } from './types';
+
+const RETRIABLE = new Set([429, 500, 502, 503, 504]);
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal, cache: 'no-store' });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function requestJsonWithRetry<T>(
+  url: string,
+  init: RequestInit,
+  timeoutMs = 15000,
+  retries = 4
+): Promise<T> {
+  let lastError: string | undefined;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const response = await fetchWithTimeout(url, init, timeoutMs);
+      if (!response.ok) {
+        const bodyText = await response.text().catch(() => '');
+        const reason = bodyText.slice(0, 500);
+        const message = `HTTP ${response.status} from ${url}: ${reason}`;
+
+        if (RETRIABLE.has(response.status) && attempt < retries) {
+          await sleep(Math.min(1000 * 2 ** attempt, 6000));
+          continue;
+        }
+
+        throw new Error(message);
+      }
+
+      return (await response.json()) as T;
+    } catch (error) {
+      lastError = redactedErrorMessage(error);
+      if (attempt < retries) {
+        await sleep(Math.min(1000 * 2 ** attempt, 6000));
+        continue;
+      }
+      throw new Error(lastError);
+    }
+  }
+
+  throw new Error(lastError ?? 'Unknown API error');
+}
+
+function authHeaders(token: string, contentType = true): HeadersInit {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`
+  };
+
+  if (contentType) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  return headers;
+}
+
+export async function verifyToken(baseUrl: string, token: string): Promise<void> {
+  await requestJsonWithRetry(`${baseUrl}/1/oauth/verify_token`, {
+    method: 'GET',
+    headers: authHeaders(token, false)
+  });
+}
+
+export interface FolderReadResult {
+  threadIds: string[];
+  foldersScanned: number;
+}
+
+function parseChildren(payload: any): any[] {
+  if (Array.isArray(payload?.children)) return payload.children;
+  if (Array.isArray(payload?.folder?.children)) return payload.folder.children;
+  if (Array.isArray(payload?.response?.children)) return payload.response.children;
+  return [];
+}
+
+function readString(...values: any[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function isFolder(item: any): boolean {
+  const type = String(item?.type ?? item?.item_type ?? item?.kind ?? '').toLowerCase();
+  return type === 'folder' || Boolean(item?.folder_id && !item?.thread_id);
+}
+
+function isThreadLike(item: any): boolean {
+  const type = String(item?.type ?? item?.item_type ?? item?.kind ?? '').toLowerCase();
+  return (
+    type === 'document' ||
+    type === 'spreadsheet' ||
+    type === 'thread' ||
+    Boolean(item?.thread_id)
+  );
+}
+
+export async function readFolderTree(
+  baseUrl: string,
+  token: string,
+  rootFolderId: string,
+  recurseSubfolders: boolean
+): Promise<FolderReadResult> {
+  const visited = new Set<string>();
+  const foldersToScan = [rootFolderId];
+  const threads = new Set<string>();
+
+  while (foldersToScan.length) {
+    const folderId = foldersToScan.pop();
+    if (!folderId || visited.has(folderId)) continue;
+    visited.add(folderId);
+
+    const payload = await requestJsonWithRetry<any>(`${baseUrl}/1/folders/${encodeURIComponent(folderId)}`, {
+      method: 'GET',
+      headers: authHeaders(token, false)
+    });
+
+    const children = parseChildren(payload);
+
+    for (const child of children) {
+      if (isFolder(child) && recurseSubfolders) {
+        const subFolderId = readString(child.folder_id, child.id);
+        if (subFolderId && !visited.has(subFolderId)) {
+          foldersToScan.push(subFolderId);
+        }
+        continue;
+      }
+
+      if (isThreadLike(child)) {
+        const threadId = readString(child.thread_id, child.id);
+        if (threadId) {
+          threads.add(threadId);
+        }
+      }
+    }
+  }
+
+  return {
+    threadIds: Array.from(threads),
+    foldersScanned: visited.size
+  };
+}
+
+export async function submitBulkExport(
+  baseUrl: string,
+  token: string,
+  threadIds: string[],
+  includeConversations: boolean
+): Promise<string> {
+  const body = {
+    threads: threadIds.map((threadId) => ({ thread_id: threadId, format: 'DOCX' })),
+    include_conversations: includeConversations,
+    locale: 'en-US'
+  };
+
+  const payload = await requestJsonWithRetry<any>(`${baseUrl}/1/threads/export/async`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify(body)
+  });
+
+  const requestId = readString(payload?.request_id, payload?.data?.request_id);
+  if (!requestId) {
+    throw new Error('Quip export request did not return request_id.');
+  }
+
+  return requestId;
+}
+
+function parseExportItems(payload: any): any[] {
+  if (Array.isArray(payload?.results)) return payload.results;
+  if (Array.isArray(payload?.items)) return payload.items;
+  if (Array.isArray(payload?.exports)) return payload.exports;
+  if (Array.isArray(payload?.data?.results)) return payload.data.results;
+  return [];
+}
+
+export async function pollExportResult(
+  baseUrl: string,
+  token: string,
+  requestId: string
+): Promise<{ successes: ExportResultItem[]; failures: FailureItem[] }> {
+  const maxPolls = 120;
+
+  for (let poll = 0; poll < maxPolls; poll += 1) {
+    const payload = await requestJsonWithRetry<any>(
+      `${baseUrl}/1/threads/export/async?request_id=${encodeURIComponent(requestId)}`,
+      {
+        method: 'GET',
+        headers: authHeaders(token, false)
+      },
+      15000,
+      3
+    );
+
+    const completed = Boolean(payload?.completed ?? payload?.data?.completed);
+    if (!completed) {
+      await sleep(Math.min(1500 + poll * 100, 5000));
+      continue;
+    }
+
+    const rawItems = parseExportItems(payload);
+    const successes: ExportResultItem[] = [];
+    const failures: FailureItem[] = [];
+
+    for (const item of rawItems) {
+      const threadId = readString(item?.thread_id, item?.threadId, item?.id) ?? 'unknown-thread';
+      const fileUrl = readString(item?.file_url, item?.url);
+      const status = readString(item?.status, item?.state);
+
+      if (fileUrl) {
+        successes.push({
+          threadId,
+          fileUrl,
+          suggestedName: readString(item?.file_name, item?.title, item?.name)
+        });
+      } else {
+        failures.push({
+          threadId,
+          status,
+          error: readString(item?.error, item?.message, item?.reason) ?? 'Export failed'
+        });
+      }
+    }
+
+    return { successes, failures };
+  }
+
+  throw new Error('Export polling timed out before completion.');
+}
+
+export async function downloadFileBuffer(url: string, token: string): Promise<ArrayBuffer> {
+  const tryDownload = async (withAuth: boolean) => {
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method: 'GET',
+        headers: withAuth ? authHeaders(token, false) : undefined,
+        cache: 'no-store'
+      },
+      25000
+    );
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`Download failed (${response.status}): ${text.slice(0, 200)}`);
+    }
+
+    return response.arrayBuffer();
+  };
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      return await tryDownload(true);
+    } catch (error) {
+      const message = redactedErrorMessage(error);
+      const authIssue = /401|403/.test(message);
+      if (authIssue) {
+        try {
+          return await tryDownload(false);
+        } catch (secondError) {
+          if (attempt === 3) throw new Error(redactedErrorMessage(secondError));
+        }
+      } else if (attempt === 3) {
+        throw new Error(message);
+      }
+      await sleep(Math.min(1000 * 2 ** attempt, 6000));
+    }
+  }
+
+  throw new Error('Unable to download exported file.');
+}
