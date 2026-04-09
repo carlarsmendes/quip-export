@@ -2,6 +2,8 @@
 
 A production-friendly MVP for HR/business users to export all docs from a Quip folder into one ZIP of DOCX files.
 
+Live app: [quip-export.vercel.app](https://quip-export.vercel.app/)
+
 ## What this app does
 
 1. Guides the user through a 3-step form:
@@ -60,46 +62,6 @@ Then open [http://localhost:3000](http://localhost:3000).
 Important:
 - Do not close or refresh the page while export/download is running.
 - Admin is usually not required; token only needs permission to the target folder/files.
-
-## Deploy to Vercel
-
-1. Push this folder to a GitHub repo (steps below).
-2. In Vercel, click **Add New Project** and import that repo.
-3. Framework preset should auto-detect as **Next.js**.
-4. No environment variables are required for this MVP.
-5. Deploy.
-
-## What you need to do on your side
-
-### 1) Create a GitHub repo
-
-```bash
-cd /Users/carlamendes/Documents/New\ project/carlamendes/Comnexa/quip-export
-git init
-git add .
-git commit -m "Initial Quip Folder Exporter MVP"
-```
-
-Create an empty repo in GitHub (for example `quip-export`) and then:
-
-```bash
-git remote add origin <YOUR_GITHUB_REPO_URL>
-git branch -M main
-git push -u origin main
-```
-
-### 2) Create a Vercel project
-
-- Go to [https://vercel.com/new](https://vercel.com/new)
-- Import your GitHub repo
-- Keep default build settings for Next.js
-- Click **Deploy**
-
-### 3) Share app URL with HR user
-
-- They open the app URL
-- Paste token + folder ID
-- Click **Export to DOCX ZIP**
 
 ## Notes for production hardening
 
