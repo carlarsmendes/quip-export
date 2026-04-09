@@ -23,6 +23,15 @@ export interface ExportSummary {
   failedExports: number;
 }
 
+export interface DownloadProgress {
+  total: number;
+  downloaded: number;
+  failed: number;
+  percent: number;
+  etaSeconds: number | null;
+  filesPerMinute: number;
+}
+
 export interface JobRecord {
   id: string;
   status: JobStatus;
@@ -36,6 +45,7 @@ export interface JobRecord {
   failures: FailureItem[];
   userError?: string;
   debugError?: string;
+  downloadProgress?: DownloadProgress;
 }
 
 export interface ExportResultItem {

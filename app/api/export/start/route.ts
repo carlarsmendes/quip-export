@@ -25,13 +25,13 @@ export async function POST(req: NextRequest) {
     }
 
     const folderId = sanitizeFolderId(body.folderId ?? '');
-    const baseUrl = sanitizeBaseUrl(body.baseUrl || 'https://platform.quip.com');
+    const baseUrl = sanitizeBaseUrl(body.baseUrl || process.env.QUIP_API_BASE_URL || 'https://platform.quip.com');
 
     const input: ExportStartInput = {
       token,
       folderId,
       baseUrl,
-      recurseSubfolders: Boolean(body.recurseSubfolders),
+      recurseSubfolders: body.recurseSubfolders ?? true,
       includeConversations: Boolean(body.includeConversations),
       testMode: Boolean(body.testMode)
     };

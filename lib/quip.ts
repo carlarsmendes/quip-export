@@ -72,11 +72,13 @@ export async function verifyToken(baseUrl: string, token: string): Promise<void>
   await requestJsonWithRetry(`${baseUrl}/1/oauth/verify_token`, {
     method: 'GET',
     headers: authHeaders(token, false)
-  });
+  }, 10000, 2);
 }
 
 export interface FolderReadResult {
   threadIds: string[];
+  threadTitles: Record<string, string>;
+  threadPaths: Record<string, string[]>;
   foldersScanned: number;
 }
 
@@ -113,6 +115,19 @@ function parseChildren(payload: unknown): JsonRecord[] {
   return [];
 }
 
+function parseFolderName(payload: unknown, folderId: string): string {
+  const root = asRecord(payload);
+  const folder = asRecord(getField(root, 'folder'));
+  return (
+    readString(
+      getField(folder, 'title'),
+      getField(folder, 'name'),
+      getField(root, 'title'),
+      getField(root, 'name')
+    ) ?? folderId
+  );
+}
+
 function readString(...values: unknown[]): string | undefined {
   for (const value of values) {
     if (typeof value === 'string' && value.trim()) {
@@ -144,11 +159,14 @@ export async function readFolderTree(
   recurseSubfolders: boolean
 ): Promise<FolderReadResult> {
   const visited = new Set<string>();
-  const foldersToScan = [rootFolderId];
+  const foldersToScan: Array<{ folderId: string; parentPath: string[] }> = [{ folderId: rootFolderId, parentPath: [] }];
   const threads = new Set<string>();
+  const threadTitles = new Map<string, string>();
+  const threadPaths = new Map<string, string[]>();
 
   while (foldersToScan.length) {
-    const folderId = foldersToScan.pop();
+    const folderEntry = foldersToScan.pop();
+    const folderId = folderEntry?.folderId;
     if (!folderId || visited.has(folderId)) continue;
     visited.add(folderId);
 
@@ -157,13 +175,18 @@ export async function readFolderTree(
       headers: authHeaders(token, false)
     });
 
+    const currentFolderName = parseFolderName(payload, folderId);
+    const currentPath = [...(folderEntry?.parentPath ?? []), currentFolderName];
     const children = parseChildren(payload);
 
     for (const child of children) {
       if (isFolder(child) && recurseSubfolders) {
         const subFolderId = readString(getField(child, 'folder_id'), getField(child, 'id'));
         if (subFolderId && !visited.has(subFolderId)) {
-          foldersToScan.push(subFolderId);
+          foldersToScan.push({
+            folderId: subFolderId,
+            parentPath: currentPath
+          });
         }
         continue;
       }
@@ -172,6 +195,17 @@ export async function readFolderTree(
         const threadId = readString(getField(child, 'thread_id'), getField(child, 'id'));
         if (threadId) {
           threads.add(threadId);
+          const threadTitle = readString(
+            getField(child, 'title'),
+            getField(child, 'name'),
+            getField(child, 'thread_title')
+          );
+          if (threadTitle && !threadTitles.has(threadId)) {
+            threadTitles.set(threadId, threadTitle);
+          }
+          if (!threadPaths.has(threadId)) {
+            threadPaths.set(threadId, [...currentPath]);
+          }
         }
       }
     }
@@ -179,6 +213,8 @@ export async function readFolderTree(
 
   return {
     threadIds: Array.from(threads),
+    threadTitles: Object.fromEntries(threadTitles.entries()),
+    threadPaths: Object.fromEntries(threadPaths.entries()),
     foldersScanned: visited.size
   };
 }
@@ -209,6 +245,73 @@ export async function submitBulkExport(
   }
 
   return requestId;
+}
+
+function parseThreadTitle(payload: unknown): string | undefined {
+  const root = asRecord(payload);
+  if (!root) return undefined;
+
+  const thread = asRecord(getField(root, 'thread'));
+  const data = asRecord(getField(root, 'data'));
+
+  return readString(
+    getField(root, 'title'),
+    getField(root, 'thread_title'),
+    getField(root, 'name'),
+    getField(thread, 'title'),
+    getField(thread, 'thread_title'),
+    getField(thread, 'name'),
+    getField(data, 'title'),
+    getField(data, 'thread_title'),
+    getField(data, 'name')
+  );
+}
+
+async function fetchThreadTitle(baseUrl: string, token: string, threadId: string): Promise<string | undefined> {
+  const payload = await requestJsonWithRetry<unknown>(
+    `${baseUrl}/1/threads/${encodeURIComponent(threadId)}`,
+    {
+      method: 'GET',
+      headers: authHeaders(token, false)
+    },
+    12000,
+    2
+  );
+
+  return parseThreadTitle(payload);
+}
+
+export async function enrichThreadTitles(
+  baseUrl: string,
+  token: string,
+  threadIds: string[],
+  existingTitles: Record<string, string>
+): Promise<Record<string, string>> {
+  const titles: Record<string, string> = { ...existingTitles };
+  const missing = threadIds.filter((id) => !titles[id]);
+  if (!missing.length) return titles;
+
+  const queue = [...missing];
+  const workers = Math.min(6, queue.length);
+
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      while (queue.length) {
+        const threadId = queue.shift();
+        if (!threadId) break;
+        try {
+          const title = await fetchThreadTitle(baseUrl, token, threadId);
+          if (title) {
+            titles[threadId] = title;
+          }
+        } catch {
+          // Best-effort enrichment. Keep fallback naming if title lookup fails.
+        }
+      }
+    })
+  );
+
+  return titles;
 }
 
 function parseExportItems(payload: unknown): JsonRecord[] {

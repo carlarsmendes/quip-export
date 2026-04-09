@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
-import { JobRecord } from './types';
+import { persistCompletedJob } from './completedJobStore';
+import { DownloadProgress, JobRecord } from './types';
 
 const JOB_TTL_MS = 30 * 60 * 1000;
 const jobs = new Map<string, JobRecord>();
@@ -78,6 +79,13 @@ export function setJobFailures(id: string, failures: JobRecord['failures']): voi
   job.updatedAt = now();
 }
 
+export function setJobDownloadProgress(id: string, progress: DownloadProgress): void {
+  const job = jobs.get(id);
+  if (!job) return;
+  job.downloadProgress = progress;
+  job.updatedAt = now();
+}
+
 export function setJobCompleted(id: string, zipBuffer: Buffer, zipFilename: string): void {
   const job = jobs.get(id);
   if (!job) return;
@@ -87,6 +95,11 @@ export function setJobCompleted(id: string, zipBuffer: Buffer, zipFilename: stri
   job.zipBuffer = zipBuffer;
   job.zipFilename = zipFilename;
   job.updatedAt = now();
+  try {
+    persistCompletedJob(id, zipBuffer, zipFilename, job.summary, job.failures);
+  } catch {
+    // Keep successful in-memory completion even if temp persistence fails.
+  }
 }
 
 export function setJobFailed(id: string, userError: string, debugError: string): void {

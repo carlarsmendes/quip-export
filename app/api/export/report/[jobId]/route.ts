@@ -1,12 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { loadCompletedJobMeta } from '@/lib/completedJobStore';
 import { getJob } from '@/lib/jobStore';
 
 export const runtime = 'nodejs';
 
 export async function GET(_req: NextRequest, { params }: { params: { jobId: string } }) {
-  const job = getJob(params.jobId);
+  const jobId = params.jobId;
+  const job = getJob(jobId);
   if (!job) {
-    return NextResponse.json({ error: 'Job not found or expired.' }, { status: 404 });
+    const persistedMeta = loadCompletedJobMeta(jobId);
+    if (!persistedMeta) {
+      return NextResponse.json({ error: 'Job not found or expired.' }, { status: 404 });
+    }
+
+    return NextResponse.json(
+      {
+        id: persistedMeta.id,
+        status: 'completed',
+        summary: persistedMeta.summary,
+        failures: persistedMeta.failures
+      },
+      {
+        status: 200,
+        headers: {
+          'Cache-Control': 'no-store',
+          'Content-Disposition': `attachment; filename="quip_export_report_${jobId}.json"`
+        }
+      }
+    );
   }
 
   return NextResponse.json(
@@ -20,7 +41,7 @@ export async function GET(_req: NextRequest, { params }: { params: { jobId: stri
       status: 200,
       headers: {
         'Cache-Control': 'no-store',
-        'Content-Disposition': `attachment; filename="quip_export_report_${params.jobId}.json"`
+        'Content-Disposition': `attachment; filename="quip_export_report_${jobId}.json"`
       }
     }
   );

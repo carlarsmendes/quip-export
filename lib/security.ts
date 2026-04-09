@@ -49,6 +49,10 @@ export function redactedErrorMessage(error: unknown): string {
 }
 
 export function userFacingError(message: string): string {
+  if (/fetch failed|enotfound|econnrefused|network|timed out|aborted|aborterror/i.test(message)) {
+    return 'Could not reach Quip API. Check API base URL, VPN/network access, and try again.';
+  }
+
   if (/verify_token|invalid token|unauthorized|401/i.test(message)) {
     return 'Token validation failed. Please check your bearer token.';
   }
@@ -57,7 +61,7 @@ export function userFacingError(message: string): string {
     return 'Folder not found. Please verify the folder ID and API base URL.';
   }
 
-  if (/no exportable threads/i.test(message)) {
+  if (/no exportable threads|no exportable files/i.test(message)) {
     return 'No exportable documents or spreadsheets were found in this folder.';
   }
 
