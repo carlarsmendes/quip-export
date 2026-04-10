@@ -64,6 +64,30 @@ form {
   gap: 18px;
 }
 
+.mode-row {
+  display: flex;
+  gap: 10px;
+}
+
+.mode-btn {
+  width: auto;
+  flex: 1;
+  background: #eef0ff;
+  color: #4f46e5;
+  border: 1px solid #d9ddff;
+  font-weight: 600;
+}
+
+.mode-btn:hover:enabled {
+  background: #e3e7ff;
+}
+
+.mode-btn-active {
+  background: #6366f1;
+  border-color: #6366f1;
+  color: #ffffff;
+}
+
 label {
   display: block;
   font-weight: 600;

@@ -15,6 +15,14 @@ export function sanitizeFolderId(folderId: string): string {
   return trimmed;
 }
 
+export function sanitizeThreadId(threadId: string): string {
+  const trimmed = threadId.trim();
+  if (!/^[A-Za-z0-9_-]{3,140}$/.test(trimmed)) {
+    throw new Error('Document ID format is invalid.');
+  }
+  return trimmed;
+}
+
 export function sanitizeBaseUrl(input: string): string {
   let url: URL;
   try {

@@ -267,9 +267,26 @@ function parseThreadTitle(payload: unknown): string | undefined {
   );
 }
 
-async function fetchThreadTitle(baseUrl: string, token: string, threadId: string): Promise<string | undefined> {
+function parseThreadId(payload: unknown): string | undefined {
+  const root = asRecord(payload);
+  if (!root) return undefined;
+  const thread = asRecord(getField(root, 'thread'));
+  const data = asRecord(getField(root, 'data'));
+  return readString(
+    getField(thread, 'id'),
+    getField(root, 'thread_id'),
+    getField(data, 'id'),
+    getField(root, 'id')
+  );
+}
+
+async function fetchThreadDetails(
+  baseUrl: string,
+  token: string,
+  threadReference: string
+): Promise<{ id?: string; title?: string }> {
   const payload = await requestJsonWithRetry<unknown>(
-    `${baseUrl}/1/threads/${encodeURIComponent(threadId)}`,
+    `${baseUrl}/1/threads/${encodeURIComponent(threadReference)}`,
     {
       method: 'GET',
       headers: authHeaders(token, false)
@@ -278,7 +295,20 @@ async function fetchThreadTitle(baseUrl: string, token: string, threadId: string
     2
   );
 
-  return parseThreadTitle(payload);
+  return {
+    id: parseThreadId(payload),
+    title: parseThreadTitle(payload)
+  };
+}
+
+async function fetchThreadTitle(baseUrl: string, token: string, threadId: string): Promise<string | undefined> {
+  const details = await fetchThreadDetails(baseUrl, token, threadId);
+  return details.title;
+}
+
+export async function resolveThreadId(baseUrl: string, token: string, threadReference: string): Promise<string> {
+  const details = await fetchThreadDetails(baseUrl, token, threadReference);
+  return details.id ?? threadReference;
 }
 
 export async function enrichThreadTitles(

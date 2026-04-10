@@ -26,6 +26,8 @@ type StatusPayload = {
   hasZip: boolean;
 };
 
+type ExportMode = 'folder' | 'single';
+
 const EMPTY_SUMMARY = {
   foldersScanned: 0,
   uniqueThreadsFound: 0,
@@ -123,12 +125,21 @@ function formatEta(etaSeconds: number | null): string {
   return `~${minutes}m ${seconds}s`;
 }
 
+function parseFilenameFromHeader(contentDisposition: string | null): string | null {
+  if (!contentDisposition) return null;
+  const match = contentDisposition.match(/filename=\"?([^\";]+)\"?/i);
+  return match?.[1] ?? null;
+}
+
 export default function HomePage() {
   const [token, setToken] = useState('');
   const [folderId, setFolderId] = useState('');
+  const [documentId, setDocumentId] = useState('');
+  const [mode, setMode] = useState<ExportMode>('folder');
   const [jobId, setJobId] = useState<string | null>(null);
   const [statusPayload, setStatusPayload] = useState<StatusPayload | null>(null);
   const [error, setError] = useState('');
+  const [singleSuccess, setSingleSuccess] = useState('');
   const [isStarting, setIsStarting] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [, setClockTick] = useState(0);
@@ -206,42 +217,76 @@ export default function HomePage() {
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError('');
+    setSingleSuccess('');
     setJobId(null);
     setStatusPayload(null);
     setIsStarting(true);
     setStartedAt(Date.now());
 
     try {
-      const response = await fetch('/api/export/start', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          token,
-          folderId
-        })
-      });
+      if (mode === 'single') {
+        const response = await fetch('/api/export/single-docx', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            token,
+            documentId
+          })
+        });
 
-      const payload = await safeReadJson(response);
-      if (!response.ok) {
-        const apiMessage = valueAsString(payload.error);
-        throw new Error(mapHttpError(response.status, apiMessage));
-      }
+        if (!response.ok) {
+          const payload = await safeReadJson(response);
+          const apiMessage = valueAsString(payload.error);
+          throw new Error(mapHttpError(response.status, apiMessage));
+        }
 
-      const newJobId = valueAsString(payload.jobId);
-      if (!newJobId) {
-        throw new Error('Backend response is missing a job ID. Please retry.');
-      }
-      setJobId(newJobId);
+        const blob = await response.blob();
+        const filename = parseFilenameFromHeader(response.headers.get('content-disposition')) ?? `${documentId}.docx`;
+        const downloadUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(downloadUrl);
 
-      // Clear token from client state after submit to minimize in-memory lifetime in browser.
-      setToken('');
+        setSingleSuccess('Done. 1 file exported as DOCX.');
+        setToken('');
+      } else {
+        const response = await fetch('/api/export/start', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            token,
+            folderId
+          })
+        });
 
-      try {
-        await pollStatus(newJobId);
-      } catch (pollError) {
-        throw new Error(mapClientError(pollError, 'poll'));
+        const payload = await safeReadJson(response);
+        if (!response.ok) {
+          const apiMessage = valueAsString(payload.error);
+          throw new Error(mapHttpError(response.status, apiMessage));
+        }
+
+        const newJobId = valueAsString(payload.jobId);
+        if (!newJobId) {
+          throw new Error('Backend response is missing a job ID. Please retry.');
+        }
+        setJobId(newJobId);
+
+        // Clear token from client state after submit to minimize in-memory lifetime in browser.
+        setToken('');
+
+        try {
+          await pollStatus(newJobId);
+        } catch (pollError) {
+          throw new Error(mapClientError(pollError, 'poll'));
+        }
       }
     } catch (submitError) {
       setError(mapClientError(submitError, 'start'));
@@ -270,6 +315,25 @@ export default function HomePage() {
         </p>
 
         <form onSubmit={onSubmit}>
+          <div className="mode-row">
+            <button
+              type="button"
+              className={`mode-btn ${mode === 'folder' ? 'mode-btn-active' : ''}`}
+              onClick={() => setMode('folder')}
+              disabled={isBusy}
+            >
+              Folder ZIP
+            </button>
+            <button
+              type="button"
+              className={`mode-btn ${mode === 'single' ? 'mode-btn-active' : ''}`}
+              onClick={() => setMode('single')}
+              disabled={isBusy}
+            >
+              Single DOCX
+            </button>
+          </div>
+
           <div>
             <label htmlFor="token">Step 1: Generate your Quip access token</label>
             <div className="help">
@@ -296,22 +360,47 @@ export default function HomePage() {
           </div>
 
           <div>
-            <label htmlFor="folderId">Step 3: Paste your folder ID</label>
-            <input
-              id="folderId"
-              type="text"
-              required
-              value={folderId}
-              onChange={(event) => setFolderId(event.target.value)}
-              spellCheck={false}
-            />
-            <div className="help">
-              In Quip, open the target folder and copy the ID from the URL (the last segment after `/folder/`).
-            </div>
+            {mode === 'folder' ? (
+              <>
+                <label htmlFor="folderId">Step 3: Paste your folder ID</label>
+                <input
+                  id="folderId"
+                  type="text"
+                  required={mode === 'folder'}
+                  value={folderId}
+                  onChange={(event) => setFolderId(event.target.value)}
+                  spellCheck={false}
+                />
+                <div className="help">
+                  In Quip, open the target folder URL, for example: `https://mycompany.quip.com/kwoVOMWrEnFt/Folder-Name`.
+                </div>
+                <div className="help">
+                  Paste only the first code segment after the domain, for example: `kwoVOMWrEnFt`.
+                </div>
+              </>
+            ) : (
+              <>
+                <label htmlFor="documentId">Step 3: Paste your document URL slug</label>
+                <input
+                  id="documentId"
+                  type="text"
+                  required={mode === 'single'}
+                  value={documentId}
+                  onChange={(event) => setDocumentId(event.target.value)}
+                  spellCheck={false}
+                />
+                <div className="help">
+                  In Quip, open the document URL, for example: `https://mycompany.quip.com/G0tWAQCb3J2w/Document-Title`.
+                </div>
+                <div className="help">
+                  Paste the first code segment after the domain (`G0tWAQCb3J2w`), or paste the full URL.
+                </div>
+              </>
+            )}
           </div>
 
           <button type="submit" disabled={isBusy}>
-            {isBusy ? 'Export in progress...' : 'Export to DOCX ZIP'}
+            {isBusy ? 'Export in progress...' : mode === 'single' ? 'Download DOCX' : 'Export to DOCX ZIP'}
           </button>
         </form>
 
@@ -386,6 +475,8 @@ export default function HomePage() {
             )}
           </div>
         )}
+
+        {singleSuccess && <div className="success">{singleSuccess}</div>}
 
         {error && <div className="error">{error}</div>}
         {error && (
